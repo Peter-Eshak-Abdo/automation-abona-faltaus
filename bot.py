@@ -1,12 +1,10 @@
 import os
-import json
 import requests
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
-
 OFFSET_FILE = "last_offset.txt"
 
 def get_offset():
@@ -22,11 +20,10 @@ def save_offset(offset):
 
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": 5}
-    response = requests.get(url, params=params)
+    response = requests.get(url, params={"offset": offset, "timeout": 5})
     return response.json().get("result", [])
 
-def add_to_notion(text, source="Telegram"):
+def add_to_notion(text):
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -46,23 +43,28 @@ def add_to_notion(text, source="Telegram"):
                 "select": {"name": "🟡 Medium"}
             },
             "Source": {
-                "select": {"name": f"📱 {source}"}
+                "select": {"name": "📱 Telegram"}
             },
             "Notes": {
                 "rich_text": [{"text": {"content": f"Received: {datetime.now().strftime('%d/%m/%Y %H:%M')}"}}]
             }
         }
     }
-    response = requests.post(url, headers=headers, json=data)
-    return response.status_code == 200
+    r = requests.post(url, headers=headers, json=data)
+    return r.status_code == 200
 
 def send_reply(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+    requests.post(url, json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    })
 
 def main():
     offset = get_offset()
     updates = get_updates(offset)
+    new_offset = offset
 
     for update in updates:
         update_id = update["update_id"]
@@ -72,18 +74,26 @@ def main():
 
         if text and chat_id:
             if text == "/start":
-                send_reply(chat_id, "✅ البوت شغال! ابعت أي فكرة وهتتضاف في Notion.")
+                send_reply(chat_id,
+                    "👋 <b>أهلاً!</b>\n\n"
+                    "ابعت أي فكرة أو تاسك وهيتضاف في Notion فوراً ✅"
+                )
             else:
                 success = add_to_notion(text)
                 if success:
-                    send_reply(chat_id, f"✅ اتضافت في Notion!\n\n📝 {text[:100]}")
+                    send_reply(chat_id,
+                        f"✅ <b>اتضاف في Notion!</b>\n\n"
+                        f"📝 <b>التاسك:</b> {text[:150]}\n"
+                        f"📊 <b>Status:</b> 🆕 New\n"
+                        f"⭐ <b>Priority:</b> 🟡 Medium\n"
+                        f"⏰ <b>الوقت:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                    )
                 else:
-                    send_reply(chat_id, "❌ في مشكلة، جرب تاني.")
+                    send_reply(chat_id, "❌ في مشكلة في Notion، جرب تاني.")
 
-        offset = update_id + 1
+        new_offset = update_id + 1
 
-    if updates:
-        save_offset(offset)
+    save_offset(new_offset)
 
 if __name__ == "__main__":
     main()
