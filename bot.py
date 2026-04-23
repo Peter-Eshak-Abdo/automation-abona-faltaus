@@ -215,7 +215,8 @@ try:
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
             "Property": { # Changed from "Task Name" to "Property"
-                "title": [{"text": {"content": f"🧪 تجربة Debug - {datetime.now().strftime('%H:%M:%S')}"}}]
+                # "title": [{"text": {"content": f"🧪 تجربة Debug - {datetime.now().strftime('%H:%M:%S')}"}}]
+                    "title": [{"text": {"content": text[:200]}}]
             }
         }
     }
