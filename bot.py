@@ -33,8 +33,20 @@ def add_to_notion(text):
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "Property": {
+            "Task Name": {
                 "title": [{"text": {"content": text[:200]}}]
+            },
+            "Status": {
+                "select": {"name": "🆕 New"}
+            },
+            "Priority": {
+                "select": {"name": "🟡 Medium"}
+            },
+            "Source": {
+                "select": {"name": "📱 Telegram"}
+            },
+            "Notes": {
+                "rich_text": [{"text": {"content": f"Received: {datetime.now().strftime('%d/%m/%Y %H:%M')}"}}]
             }
         }
     }
