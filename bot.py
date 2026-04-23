@@ -7,85 +7,90 @@ NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 OFFSET_FILE = "last_offset.txt"
 
-print("=" * 55)
-print("🔍 اختبار شامل للنظام")
-print("=" * 55)
+def get_offset():
+    try:
+        with open(OFFSET_FILE, "r") as f:
+            return int(f.read().strip())
+    except:
+        return 0
 
-# STEP 1: Telegram
-print("\n✅ STEP 1: Telegram Bot")
-r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe").json()
-if r.get("ok"):
-    print(f"   البوت: @{r['result']['username']} ✅")
-else:
-    print(f"   ❌ Token غلط: {r.get('description')}")
-    exit()
+def save_offset(offset):
+    with open(OFFSET_FILE, "w") as f:
+        f.write(str(offset))
 
-# STEP 2: آخر رسايل
-print("\n✅ STEP 2: آخر 5 رسايل في Telegram")
-r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-                 params={"limit": 5}).json()
-updates = r.get("result", [])
-if updates:
-    for u in updates:
-        msg = u.get("message", {})
-        print(f"   [{u['update_id']}] {msg.get('text','')[:60]}")
-    print(f"\n   ⚠️  آخر offset = {updates[-1]['update_id'] + 1}")
-    print(f"   تأكد إن last_offset.txt على GitHub فيه: 0")
-    print(f"   أو فيه رقم أقل من {updates[0]['update_id']}")
-else:
-    print("   ⚠️  مفيش رسايل — ابعت رسالة للبوت الأول!")
+def get_updates(offset):
+    r = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+        params={"offset": offset, "timeout": 5}
+    )
+    return r.json().get("result", [])
 
-# STEP 3: Notion Database الجديدة
-print("\n✅ STEP 3: Notion Database")
-headers = {
-    "Authorization": f"Bearer {NOTION_TOKEN}",
-    "Notion-Version": "2022-06-28",
-    "Content-Type": "application/json"
-}
-r = requests.get(f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}",
-                 headers=headers).json()
-if "properties" in r:
-    props = list(r["properties"].keys())
-    print(f"   Database: {r['title'][0]['plain_text']} ✅")
-    print(f"   Properties: {props}")
-    if "Task Name" in props:
-        print("   'Task Name' موجود ✅")
-    else:
-        print(f"   ❌ 'Task Name' مش موجود! الموجود: {props}")
-        exit()
-else:
-    print(f"   ❌ مشكلة: {r.get('message')}")
-    exit()
-
-# STEP 4: تجربة إضافة Task حقيقية
-print("\n✅ STEP 4: إضافة Task تجريبية")
-data = {
-    "parent": {"database_id": NOTION_DATABASE_ID},
-    "properties": {
-        "Task Name": {"title": [{"text": {"content": f"✅ Test {datetime.now().strftime('%H:%M:%S')}"}}]},
-        "Status": {"select": {"name": "🆕 New"}},
-        "Priority": {"select": {"name": "🟡 Medium"}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-        "Notes": {"rich_text": [{"text": {"content": "Test من debug script"}}]}
+def add_to_notion(text):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
     }
-}
-r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
-if r.status_code == 200:
-    print("   ✅ Task اتضافت في Notion — روح شوفها!")
-else:
-    print(f"   ❌ فشل: {r.json().get('message')}")
+    data = {
+        "parent": {"database_id": NOTION_DATABASE_ID},
+        "properties": {
+            "Task Name": {"title": [{"text": {"content": text[:200]}}]},
+            "Status": {"select": {"name": "🆕 New"}},
+            "Priority": {"select": {"name": "🟡 Medium"}},
+            "Source": {"select": {"name": "📱 Telegram"}},
+            "Notes": {"rich_text": [{"text": {"content": f"Received: {datetime.now().strftime('%d/%m/%Y %H:%M')}"}}]}
+        }
+    }
+    r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+    return r.status_code == 200
 
-# STEP 5: تحقق من Integration
-print("\n✅ STEP 5: Integration متصل بالـ Database؟")
-r = requests.post("https://api.notion.com/v1/databases/query",
-                  headers=headers,
-                  json={"database_id": NOTION_DATABASE_ID})
-if r.status_code == 200:
-    results = r.json().get("results", [])
-    print(f"   ✅ Integration شغال — عدد الصفوف: {len(results)}")
-else:
-    print(f"   ❌ Integration مش متصل! روح Notion > ... > Add connections")
+def send_message(chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    )
 
-print("\n" + "=" * 55)
-print("🏁 انتهى الاختبار")
-print("=" * 55)
+def main():
+    offset = get_offset()
+    updates = get_updates(offset)
+    new_offset = offset
+    tasks_added = []
+    tasks_failed = []
+    last_chat_id = None
+
+    for update in updates:
+        update_id = update["update_id"]
+        message = update.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+        last_chat_id = chat_id
+
+        if text and chat_id:
+            if text == "/start":
+                send_message(chat_id,
+                    "👋 <b>أهلاً!</b>\n\nابعت أي فكرة أو تاسك وهيتضاف في Notion ✅"
+                )
+            else:
+                if add_to_notion(text):
+                    tasks_added.append(text[:80])
+                else:
+                    tasks_failed.append(text[:80])
+
+        new_offset = update_id + 1
+
+    if tasks_added and last_chat_id:
+        tasks_list = "\n".join([f"• {t}" for t in tasks_added])
+        send_message(last_chat_id,
+            f"✅ <b>تم إضافة {len(tasks_added)} تاسك في Notion!</b>\n\n"
+            f"📝 <b>التاسكات:</b>\n{tasks_list}\n\n"
+            f"⏰ <b>الوقت:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        )
+
+    if tasks_failed and last_chat_id:
+        send_message(last_chat_id, f"❌ فشل إضافة {len(tasks_failed)} تاسك، جرب تاني.")
+
+    if updates:
+        save_offset(new_offset)
+
+if __name__ == "__main__":
+    main()
