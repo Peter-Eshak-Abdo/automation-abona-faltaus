@@ -1,8 +1,3 @@
-// ============================================================
-// notion-to-pr.js
-// Automation: Notion Task → Gemini AI → GitHub Branch + PR
-// ============================================================
-
 const { Octokit } = require("@octokit/rest");
 
 // ── ENV Variables (مجيبينها من GitHub Secrets) ──────────────
@@ -10,8 +5,8 @@ const NOTION_TOKEN      = process.env.NOTION_TOKEN;
 const NOTION_DB_ID      = process.env.NOTION_DATABASE_ID;
 const GEMINI_API_KEY    = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN      = process.env.GITHUB_TOKEN;       // تلقائي في Actions
-const REPO_OWNER        = process.env.REPO_OWNER;         // مثال: "mohamedali"
-const REPO_NAME         = process.env.REPO_NAME;          // مثال: "my-nextjs-app"
+const REPO_OWNER        = process.env.REPO_OWNER;
+const REPO_NAME         = process.env.REPO_NAME;
 
 // ── Clients ──────────────────────────────────────────────────
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
