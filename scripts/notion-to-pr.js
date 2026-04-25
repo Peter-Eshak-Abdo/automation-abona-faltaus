@@ -29,7 +29,7 @@ async function fetchNotionTasks() {
       body: JSON.stringify({
         filter: {
           property: "Status", // ← اسم الـ Property في Notion
-          status: { equals: "New" }, // ← القيمة اللي بتفلتر بيها
+          select: { equals: "New" }, // ← القيمة اللي بتفلتر بيها
         },
         page_size: 5, // بنشتغل على 5 tasks في كل run عشان منكملش الـ rate limit
       }),
@@ -58,13 +58,13 @@ async function markTaskInProgress(pageId) {
   await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
     method: "PATCH",
     headers: {
-      "Authorization": `Bearer ${NOTION_TOKEN}`,
+      Authorization: `Bearer ${NOTION_TOKEN}`,
       "Notion-Version": "2022-06-28",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
       properties: {
-        Status: { status: { name: "In Progress" } },
+        Status: { select: { name: "In Progress" } },
       },
     }),
   });
