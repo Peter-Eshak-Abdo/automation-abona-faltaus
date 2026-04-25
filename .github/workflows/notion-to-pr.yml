@@ -34,7 +34,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          # cache: "npm"
 
       # ── 3. تثبيت الـ Dependencies ─────────────────────────
       - name: 📦 Install Dependencies
@@ -48,9 +48,12 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # تلقائي - مش محتاج تضيفه
-          REPO_OWNER: ${{ github.repository_owner }}   # تلقائي
-          REPO_NAME: ${{ github.event.repository.name }} # تلقائي
+          # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # تلقائي - مش محتاج تضيفه
+          # REPO_OWNER: ${{ github.repository_owner }}   # تلقائي
+          # REPO_NAME: ${{ github.event.repository.name }} # تلقائي
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}    # تلقائي - مش محتاج تضيفه
+          REPO_OWNER: "Peter-Eshak-Abdo"   # تلقائي
+          REPO_NAME: "abona-faltaus" # تلقائي
         run: node scripts/notion-to-pr.js
 
       # ── 5. لو حصل Error، ابعت Summary ────────────────────

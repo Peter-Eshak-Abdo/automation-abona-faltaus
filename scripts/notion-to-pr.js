@@ -17,21 +17,24 @@ const octokit = new Octokit({ auth: GITHUB_TOKEN });
 async function fetchNotionTasks() {
   console.log("📋 Fetching tasks from Notion...");
 
-  const response = await fetch(`https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${NOTION_TOKEN}`,
-      "Notion-Version": "2022-06-28",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      filter: {
-        property: "Status",          // ← اسم الـ Property في Notion
-        status: { equals: "To Do" }, // ← القيمة اللي بتفلتر بيها
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
       },
-      page_size: 5, // بنشتغل على 5 tasks في كل run عشان منكملش الـ rate limit
-    }),
-  });
+      body: JSON.stringify({
+        filter: {
+          property: "Status", // ← اسم الـ Property في Notion
+          status: { equals: "New" }, // ← القيمة اللي بتفلتر بيها
+        },
+        page_size: 5, // بنشتغل على 5 tasks في كل run عشان منكملش الـ rate limit
+      }),
+    },
+  );
 
   if (!response.ok) {
     throw new Error(`Notion API Error: ${response.status} ${await response.text()}`);
