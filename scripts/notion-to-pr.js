@@ -29,7 +29,7 @@ async function fetchNotionTasks() {
       body: JSON.stringify({
         filter: {
           property: "Status", // ← اسم الـ Property في Notion
-          select: { equals: "New" }, // ← القيمة اللي بتفلتر بيها
+          select: { equals: "🆕 New" }, // ← القيمة اللي بتفلتر بيها
         },
         page_size: 5, // بنشتغل على 5 tasks في كل run عشان منكملش الـ rate limit
       }),
