@@ -1,12 +1,12 @@
 const { Octokit } = require("@octokit/rest");
 
 // ── ENV Variables (مجيبينها من GitHub Secrets) ──────────────
-const NOTION_TOKEN      = process.env.NOTION_TOKEN;
-const NOTION_DB_ID      = process.env.NOTION_DATABASE_ID;
-const GEMINI_API_KEY    = process.env.GEMINI_API_KEY;
-const GITHUB_TOKEN      = process.env.GITHUB_TOKEN;       // تلقائي في Actions
-const REPO_OWNER        = process.env.REPO_OWNER;
-const REPO_NAME         = process.env.REPO_NAME;
+const NOTION_TOKEN = process.env.NOTION_TOKEN;
+const NOTION_DB_ID = process.env.NOTION_DATABASE_ID;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // تلقائي في Actions
+const REPO_OWNER = process.env.REPO_OWNER;
+const REPO_NAME = process.env.REPO_NAME;
 
 // ── Clients ──────────────────────────────────────────────────
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
@@ -37,7 +37,9 @@ async function fetchNotionTasks() {
   );
 
   if (!response.ok) {
-    throw new Error(`Notion API Error: ${response.status} ${await response.text()}`);
+    throw new Error(
+      `Notion API Error: ${response.status} ${await response.text()}`,
+    );
   }
 
   const data = await response.json();
@@ -45,7 +47,8 @@ async function fetchNotionTasks() {
   // استخراج العنوان من كل Task
   return data.results.map((page) => ({
     id: page.id,
-    title: page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled Task",
+    title:
+      page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled Task",
     description: page.properties["Notes"]?.rich_text?.[0]?.plain_text || "",
   }));
 }
@@ -121,23 +124,26 @@ Rules:
           maxOutputTokens: 4096,
         },
       }),
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error(`Gemini API Error: ${response.status} ${await response.text()}`);
+    throw new Error(
+      `Gemini API Error: ${response.status} ${await response.text()}`,
+    );
   }
 
   const data = await response.json();
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  // تنظيف الـ Response من أي markdown
-  const cleaned = rawText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error(`Gemini returned no JSON:\n${rawText.slice(0, 300)}`);
+  }
   try {
-    return JSON.parse(cleaned);
+    return JSON.parse(jsonMatch[0]);
   } catch {
-    throw new Error(`Gemini returned invalid JSON:\n${rawText}`);
+    throw new Error(`Gemini JSON truncated. Raw:\n${rawText.slice(0, 300)}`);
   }
 }
 
@@ -246,8 +252,17 @@ async function main() {
   console.log("=".repeat(50));
 
   // التحقق من الـ ENV Variables
-  const required = { NOTION_TOKEN, NOTION_DB_ID, GEMINI_API_KEY, GITHUB_TOKEN, REPO_OWNER, REPO_NAME };
-  const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
+  const required = {
+    NOTION_TOKEN,
+    NOTION_DB_ID,
+    GEMINI_API_KEY,
+    GITHUB_TOKEN,
+    REPO_OWNER,
+    REPO_NAME,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
   if (missing.length) {
     throw new Error(`❌ Missing environment variables: ${missing.join(", ")}`);
   }
@@ -281,13 +296,16 @@ async function main() {
       await commitFiles(finalBranch, generated.files, generated.commitMessage);
 
       // e. افتح PR
-      const prUrl = await createPullRequest(finalBranch, generated.prTitle, generated.prBody);
+      const prUrl = await createPullRequest(
+        finalBranch,
+        generated.prTitle,
+        generated.prBody,
+      );
 
       // f. تحديث Status في Notion
       await markTaskInProgress(task.id);
 
       console.log(`\n🎉 Done! PR: ${prUrl}`);
-
     } catch (err) {
       // لو فيه error في task معينة، متوقفش - كمل على الباقي
       console.error(`\n❌ Failed for task "${task.title}":`, err.message);
