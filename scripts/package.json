@@ -1,0 +1,16 @@
+{
+  "name": "automation-abona-faltaus",
+  "version": "1.0.1",
+  "description": "Automation: Notion Tasks → Gemini AI → GitHub PR",
+  "main": "notion-to-pr.js",
+  "scripts": {
+    "start": "node notion-to-pr.js",
+    "test": "node -e \"console.log('✅ Script syntax OK')\" && node --check notion-to-pr.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
