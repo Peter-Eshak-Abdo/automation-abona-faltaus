@@ -64,7 +64,7 @@ async function markTaskInProgress(pageId) {
     },
     body: JSON.stringify({
       properties: {
-        Status: { select: { name: "In Progress" } },
+        Status: { select: { name: "🔄 In Progress" } },
       },
     }),
   });
