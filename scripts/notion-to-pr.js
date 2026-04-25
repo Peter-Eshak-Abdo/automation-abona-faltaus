@@ -45,8 +45,8 @@ async function fetchNotionTasks() {
   // استخراج العنوان من كل Task
   return data.results.map((page) => ({
     id: page.id,
-    title: page.properties.Name?.title?.[0]?.plain_text || "Untitled Task",
-    description: page.properties.Description?.rich_text?.[0]?.plain_text || "",
+    title: page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled Task",
+    description: page.properties["Notes"]?.rich_text?.[0]?.plain_text || "",
   }));
 }
 
@@ -110,7 +110,7 @@ Rules:
 `;
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
