@@ -1,22 +1,164 @@
+// ============================================================
+// notion-to-pr.js  v2.0
+// Notion → Gemini (مع file tree + dependency awareness) → GitHub PR
+// ============================================================
+
 const { Octokit } = require("@octokit/rest");
 
-// ── ENV Variables (مجيبينها من GitHub Secrets) ──────────────
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const NOTION_DB_ID = process.env.NOTION_DATABASE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // تلقائي في Actions
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_OWNER = process.env.REPO_OWNER;
 const REPO_NAME = process.env.REPO_NAME;
 
-// ── Clients ──────────────────────────────────────────────────
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
 // ============================================================
-// 1️⃣  سحب المهام من Notion اللي Status = "To Do"
+// ⏱️  Rate Limit Helpers
+// ============================================================
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// بيحاول يبعت الـ request، ولو جاله 429 بيستنى ويحاول تاني
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, options);
+    if (response.status !== 429) return response;
+
+    const waitMs = attempt * 15000; // 15s, 30s, 45s
+    console.log(
+      `   ⚠️ Rate limited (429). Waiting ${waitMs / 1000}s before retry ${attempt}/${maxRetries}...`,
+    );
+    await sleep(waitMs);
+  }
+  // آخر محاولة بدون catch
+  return fetch(url, options);
+}
+
+// ============================================================
+// 0️⃣  جلب File Tree من الـ Repo كامل
+// ============================================================
+async function getRepoFileTree() {
+  console.log("🗂️  Fetching repository file tree...");
+  try {
+    const { data: ref } = await octokit.git.getRef({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      ref: "heads/main",
+    });
+    const { data: commit } = await octokit.git.getCommit({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      commit_sha: ref.object.sha,
+    });
+    const { data: tree } = await octokit.git.getTree({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      tree_sha: commit.tree.sha,
+      recursive: "true",
+    });
+    const ignored = /node_modules|\.next|\.git|dist|build|\.lock|\.log/;
+    const files = tree.tree
+      .filter((f) => f.type === "blob" && !ignored.test(f.path))
+      .map((f) => f.path);
+    console.log(`   ✓ Found ${files.length} files in repo`);
+    return files;
+  } catch (err) {
+    console.warn("   ⚠️ Could not fetch file tree:", err.message);
+    return [];
+  }
+}
+
+// ============================================================
+// 📄  جلب محتوى ملف معين
+// ============================================================
+async function getFileContent(filePath) {
+  try {
+    const { data } = await octokit.repos.getContent({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      path: filePath,
+    });
+    if (data.content)
+      return Buffer.from(data.content, "base64").toString("utf-8");
+  } catch {
+    /* new file */
+  }
+  return null;
+}
+
+// ============================================================
+// 1️⃣  سحب المهام من Notion
 // ============================================================
 async function fetchNotionTasks() {
   console.log("📋 Fetching tasks from Notion...");
+  const response = await fetch(
+    `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        filter: { property: "Status", select: { equals: "🆕 New" } },
+        sorts: [{ property: "Priority", direction: "descending" }],
+        page_size: 10,
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      `Notion API Error: ${response.status} ${await response.text()}`,
+    );
+  const data = await response.json();
 
+  return data.results.map((page) => {
+    const notesText =
+      page.properties["Notes"]?.rich_text?.[0]?.plain_text || "";
+    const filesMatch = notesText.match(/Files: (.+)/);
+    const dependsMatch = notesText.match(/Depends on: (.+)/);
+    const descLines = notesText
+      .split("\n")
+      .filter(
+        (l) =>
+          !l.startsWith("Received:") &&
+          !l.startsWith("Files:") &&
+          !l.startsWith("Depends on:"),
+      );
+    return {
+      id: page.id,
+      title:
+        page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled Task",
+      description: descLines.join("\n").trim(),
+      targetFiles: filesMatch
+        ? filesMatch[1]
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean)
+        : [],
+      dependsOn: dependsMatch ? dependsMatch[1].trim() : null,
+      priority: page.properties["Priority"]?.select?.name || "🟡 Medium",
+    };
+  });
+}
+
+// ============================================================
+// 🔗  فحص الـ Dependencies
+// ============================================================
+async function checkDependencyReady(dependsOnTitle, allTasks) {
+  if (!dependsOnTitle) return { ready: true };
+  const depInQueue = allTasks.find((t) =>
+    t.title.toLowerCase().includes(dependsOnTitle.toLowerCase()),
+  );
+  if (depInQueue) {
+    return {
+      ready: false,
+      reason: `"${dependsOnTitle}" لسه Status = New في الـ queue`,
+    };
+  }
+  // تأكد من Notion
   const response = await fetch(
     `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,
     {
@@ -28,34 +170,26 @@ async function fetchNotionTasks() {
       },
       body: JSON.stringify({
         filter: {
-          property: "Status", // ← اسم الـ Property في Notion
-          select: { equals: "🆕 New" }, // ← القيمة اللي بتفلتر بيها
+          and: [
+            {
+              property: "Task Name",
+              title: { contains: dependsOnTitle.slice(0, 50) },
+            },
+            { property: "Status", select: { equals: "🆕 New" } },
+          ],
         },
-        page_size: 5, // بنشتغل على 5 tasks في كل run عشان منكملش الـ rate limit
       }),
     },
   );
-
-  if (!response.ok) {
-    throw new Error(
-      `Notion API Error: ${response.status} ${await response.text()}`,
-    );
-  }
-
   const data = await response.json();
-
-  // استخراج العنوان من كل Task
-  return data.results.map((page) => ({
-    id: page.id,
-    title:
-      page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled Task",
-    description: page.properties["Notes"]?.rich_text?.[0]?.plain_text || "",
-  }));
+  if (data.results?.length > 0) {
+    return { ready: false, reason: `"${dependsOnTitle}" لسه New في Notion` };
+  }
+  return { ready: true };
 }
 
 // ============================================================
-// 2️⃣  تعديل Status المهمة في Notion → "In Progress"
-//     (عشان ما يتعمل PR مكررة لنفس الـ Task)
+// 2️⃣  تعديل Status → In Progress
 // ============================================================
 async function markTaskInProgress(pageId) {
   await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
@@ -66,89 +200,84 @@ async function markTaskInProgress(pageId) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      properties: {
-        Status: { select: { name: "🔄 In Progress" } },
-      },
+      properties: { Status: { select: { name: "🔄 In Progress" } } },
     }),
   });
-  console.log(`✅ Notion task marked as In Progress: ${pageId}`);
+  console.log(`   ✅ Notion → In Progress`);
 }
 
 // ============================================================
-// 3️⃣  بعت الـ Task لـ Gemini وبيرجع Code Snippet
+// 3️⃣  توليد الكود من Gemini
 // ============================================================
-async function generateCodeWithGemini(task) {
-  console.log(`🤖 Asking Gemini for: "${task.title}"...`);
+async function generateCodeWithGemini(task, fileTree, targetFileContents) {
+  console.log(`🤖 Asking Gemini...`);
 
-  const prompt = `
-You are an expert Next.js developer working with TypeScript.
-A task has been assigned to you from a project management system.
-
-Task Title: ${task.title}
-Task Description: ${task.description || "No description provided."}
-
-Your job:
-1. Analyze this task and determine what code changes or new files are needed.
-2. Generate a realistic, production-quality code implementation for a Next.js + TypeScript project.
-3. Return ONLY a JSON object (no markdown, no explanation) with this exact structure:
-
-{
-  "branchName": "feature/short-kebab-case-name",
-  "commitMessage": "feat: short description of what was implemented",
-  "prTitle": "PR title describing the feature",
-  "prBody": "## Summary\\nWhat was done and why.\\n\\n## Changes\\n- List of changes",
-  "files": [
-    {
-      "path": "relative/path/to/file.tsx",
-      "content": "full file content here"
+  let targetFilesContext = "";
+  if (Object.keys(targetFileContents).length > 0) {
+    targetFilesContext = "\n## Current Content of Target Files:\n";
+    for (const [path, content] of Object.entries(targetFileContents)) {
+      targetFilesContext += `\n### ${path}\n\`\`\`\n${content.slice(0, 3000)}\n\`\`\`\n`;
     }
-  ]
-}
+  }
 
-Rules:
-- branchName must start with "feature/" or "fix/" or "chore/"
-- Generate 1-3 files maximum
-- Use TypeScript and Next.js App Router conventions
-- Keep code clean, typed, and production-ready
-`;
+  const treePreview = fileTree.slice(0, 100).join("\n");
+  const prompt = `You are an expert Next.js + TypeScript developer with full visibility into the project.
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+## Project File Tree:
+\`\`\`
+${treePreview}
+${fileTree.length > 100 ? `... and ${fileTree.length - 100} more files` : ""}
+\`\`\`
+${targetFilesContext}
+
+## Task:
+- Title: ${task.title}
+- Description: ${task.description || "No additional description."}
+- Target Files (user specified): ${task.targetFiles.length > 0 ? task.targetFiles.join(", ") : "Infer from task"}
+- Priority: ${task.priority}
+
+## Instructions:
+1. Study the project structure carefully and match existing conventions.
+2. Implement exactly what the task describes.
+3. If target files specified, modify/create those exact files.
+4. Return ONLY a raw JSON object with NO markdown, NO backticks, NO text before or after.
+
+## JSON format:
+{"branchName":"feature/name","commitMessage":"feat: description","prTitle":"PR title","prBody":"## Summary\\nDetails\\n\\n## Changes\\n- item","files":[{"path":"exact/path.tsx","content":"complete file content"}]}
+
+Rules: branchName starts with feature/ or fix/ or chore/, 1-3 files max, complete production-ready code.`;
+
+  const response = await fetchWithRetry(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 4096,
-        },
+        generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
       }),
     },
   );
-
-  if (!response.ok) {
+  if (!response.ok)
     throw new Error(
       `Gemini API Error: ${response.status} ${await response.text()}`,
     );
-  }
 
   const data = await response.json();
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  if (!jsonMatch)
     throw new Error(`Gemini returned no JSON:\n${rawText.slice(0, 300)}`);
-  }
   try {
     return JSON.parse(jsonMatch[0]);
   } catch {
-    throw new Error(`Gemini JSON truncated. Raw:\n${rawText.slice(0, 300)}`);
+    throw new Error(`Gemini JSON invalid/truncated:\n${rawText.slice(0, 300)}`);
   }
 }
 
 // ============================================================
-// 4️⃣  جلب الـ SHA الحالي لـ main branch
+// 4️⃣  جلب SHA الـ main
 // ============================================================
 async function getMainBranchSHA() {
   const { data } = await octokit.repos.getBranch({
@@ -160,7 +289,7 @@ async function getMainBranchSHA() {
 }
 
 // ============================================================
-// 5️⃣  إنشاء Branch جديد على GitHub
+// 5️⃣  إنشاء Branch
 // ============================================================
 async function createBranch(branchName, baseSHA) {
   console.log(`🌿 Creating branch: ${branchName}`);
@@ -172,10 +301,9 @@ async function createBranch(branchName, baseSHA) {
       sha: baseSHA,
     });
   } catch (err) {
-    // لو الـ Branch موجود أصلاً، أضف timestamp عليه
     if (err.status === 422) {
       const uniqueBranch = `${branchName}-${Date.now()}`;
-      console.log(`⚠️ Branch exists, using: ${uniqueBranch}`);
+      console.log(`   ⚠️ Branch exists, using: ${uniqueBranch}`);
       await octokit.git.createRef({
         owner: REPO_OWNER,
         repo: REPO_NAME,
@@ -190,13 +318,11 @@ async function createBranch(branchName, baseSHA) {
 }
 
 // ============================================================
-// 6️⃣  Commit الملفات على الـ Branch
+// 6️⃣  Commit الملفات
 // ============================================================
 async function commitFiles(branchName, files, commitMessage) {
   console.log(`💾 Committing ${files.length} file(s)...`);
-
   for (const file of files) {
-    // تحقق لو الملف موجود (عشان نجيب SHA بتاعه للـ update)
     let existingFileSHA;
     try {
       const { data } = await octokit.repos.getContent({
@@ -207,9 +333,8 @@ async function commitFiles(branchName, files, commitMessage) {
       });
       existingFileSHA = data.sha;
     } catch {
-      existingFileSHA = undefined; // الملف جديد
+      existingFileSHA = undefined;
     }
-
     await octokit.repos.createOrUpdateFileContents({
       owner: REPO_OWNER,
       repo: REPO_NAME,
@@ -219,39 +344,52 @@ async function commitFiles(branchName, files, commitMessage) {
       branch: branchName,
       sha: existingFileSHA,
     });
-
-    console.log(`  ✓ ${file.path}`);
+    console.log(`   ✓ ${file.path}`);
   }
 }
 
 // ============================================================
-// 7️⃣  فتح Pull Request تلقائياً
+// 7️⃣  فتح Pull Request
 // ============================================================
-async function createPullRequest(branchName, prTitle, prBody) {
+async function createPullRequest(branchName, prTitle, prBody, task) {
   console.log(`🚀 Opening Pull Request...`);
+  const fullBody = [
+    prBody,
+    "",
+    "---",
+    "### 📋 Task Details",
+    `- **Task**: ${task.title}`,
+    task.targetFiles.length > 0
+      ? `- **Files**: \`${task.targetFiles.join("`, `")}\``
+      : null,
+    task.dependsOn ? `- **Depended on**: ${task.dependsOn}` : null,
+    `- **Priority**: ${task.priority}`,
+    "",
+    "> 🤖 Auto-generated by Notion → Gemini → GitHub Actions",
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
 
   const { data: pr } = await octokit.pulls.create({
     owner: REPO_OWNER,
     repo: REPO_NAME,
     title: prTitle,
-    body: `${prBody}\n\n---\n> 🤖 Auto-generated by Notion → Gemini → GitHub Actions`,
+    body: fullBody,
     head: branchName,
     base: "main",
   });
-
-  console.log(`✅ PR created: ${pr.html_url}`);
+  console.log(`   ✅ PR: ${pr.html_url}`);
   return pr.html_url;
 }
 
 // ============================================================
-// 🚀 Main Runner
+// 🚀 Main
 // ============================================================
 async function main() {
   console.log("=".repeat(50));
-  console.log("🔄 Starting Notion → PR Automation");
+  console.log("🔄 Starting Notion → PR Automation v2.0");
   console.log("=".repeat(50));
 
-  // التحقق من الـ ENV Variables
   const required = {
     NOTION_TOKEN,
     NOTION_DB_ID,
@@ -263,52 +401,81 @@ async function main() {
   const missing = Object.entries(required)
     .filter(([, v]) => !v)
     .map(([k]) => k);
-  if (missing.length) {
-    throw new Error(`❌ Missing environment variables: ${missing.join(", ")}`);
-  }
+  if (missing.length)
+    throw new Error(`❌ Missing env vars: ${missing.join(", ")}`);
 
-  // 1. جلب المهام
+  // جلب file tree مرة واحدة لكل الـ tasks
+  const fileTree = await getRepoFileTree();
   const tasks = await fetchNotionTasks();
 
   if (tasks.length === 0) {
-    console.log("✨ No 'To Do' tasks found. Nothing to do!");
+    console.log("✨ No New tasks found. Nothing to do!");
     return;
   }
+  console.log(`\n📌 Found ${tasks.length} task(s)\n`);
 
-  console.log(`📌 Found ${tasks.length} task(s) to process\n`);
-
-  // 2. معالجة كل مهمة
   for (const task of tasks) {
     console.log(`\n${"─".repeat(40)}`);
-    console.log(`📝 Processing: "${task.title}"`);
-
+    console.log(`📝 "${task.title}"`);
     try {
-      // a. اطلب الكود من Gemini
-      const generated = await generateCodeWithGemini(task);
+      // 1. فحص الـ Dependencies
+      if (task.dependsOn) {
+        console.log(`🔗 Checking dependency: "${task.dependsOn}"...`);
+        const depCheck = await checkDependencyReady(task.dependsOn, tasks);
+        if (!depCheck.ready) {
+          console.log(`   ⏸️  Skipping: ${depCheck.reason}`);
+          continue;
+        }
+        console.log(`   ✅ Dependency cleared!`);
+      }
 
-      // b. اجيب SHA بتاع main
+      // 2. جلب محتوى الملفات المستهدفة
+      const targetFileContents = {};
+      if (task.targetFiles.length > 0) {
+        console.log(`📁 Fetching ${task.targetFiles.length} target file(s)...`);
+        for (const filePath of task.targetFiles) {
+          const content = await getFileContent(filePath);
+          if (content) {
+            targetFileContents[filePath] = content;
+            console.log(`   ✓ ${filePath} (${content.length} chars)`);
+          } else {
+            console.log(`   ○ ${filePath} (will be created)`);
+          }
+        }
+      }
+
+      // 3. Gemini
+      const generated = await generateCodeWithGemini(
+        task,
+        fileTree,
+        targetFileContents,
+      );
+
+      // 4. GitHub
       const baseSHA = await getMainBranchSHA();
-
-      // c. إنشاء Branch
       const finalBranch = await createBranch(generated.branchName, baseSHA);
-
-      // d. Commit الملفات
       await commitFiles(finalBranch, generated.files, generated.commitMessage);
-
-      // e. افتح PR
       const prUrl = await createPullRequest(
         finalBranch,
         generated.prTitle,
         generated.prBody,
+        task,
       );
 
-      // f. تحديث Status في Notion
+      // 5. Notion
       await markTaskInProgress(task.id);
 
-      console.log(`\n🎉 Done! PR: ${prUrl}`);
+      console.log(`\n🎉 Done! → ${prUrl}`);
+
+      // انتظر 12 ثانية بين كل task عشان ما نتجاوزش الـ 5 RPM
+      if (tasks.indexOf(task) < tasks.length - 1) {
+        console.log(
+          "⏳ Waiting 12s before next task (rate limit protection)...",
+        );
+        await sleep(12000);
+      }
     } catch (err) {
-      // لو فيه error في task معينة، متوقفش - كمل على الباقي
-      console.error(`\n❌ Failed for task "${task.title}":`, err.message);
+      console.error(`\n❌ Failed: "${task.title}"\n   ${err.message}`);
     }
   }
 
@@ -317,6 +484,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("💥 Fatal error:", err);
+  console.error("💥 Fatal:", err);
   process.exit(1);
 });
