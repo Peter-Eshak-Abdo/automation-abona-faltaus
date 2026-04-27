@@ -2,7 +2,8 @@ name: Telegram Notion Bot
 
 on:
   schedule:
-    - cron: '*/45 * * * *'
+    - cron: "0 9 * * *"
+    - cron: "0 21 * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,7 +20,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: pip install requests

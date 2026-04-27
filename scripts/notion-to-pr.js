@@ -1,8 +1,3 @@
-// ============================================================
-// notion-to-pr.js  v2.0
-// Notion → Gemini (مع file tree + dependency awareness) → GitHub PR
-// ============================================================
-
 const { Octokit } = require("@octokit/rest");
 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
@@ -207,47 +202,69 @@ async function markTaskInProgress(pageId) {
 }
 
 // ============================================================
-// 3️⃣  توليد الكود من Gemini
+// 3️⃣  توليد الكود - Model Fallback Chain
+//     Gemini 2.5 Flash → Gemini 2.0 Flash → Groq (Llama 3.3 70B)
 // ============================================================
-async function generateCodeWithGemini(task, fileTree, targetFileContents) {
-  console.log(`🤖 Asking Gemini...`);
 
+// بناء الـ prompt (مشترك بين كل الموديلات)
+function buildPrompt(task, fileTree, targetFileContents) {
   let targetFilesContext = "";
   if (Object.keys(targetFileContents).length > 0) {
     targetFilesContext = "\n## Current Content of Target Files:\n";
     for (const [path, content] of Object.entries(targetFileContents)) {
-      targetFilesContext += `\n### ${path}\n\`\`\`\n${content.slice(0, 3000)}\n\`\`\`\n`;
+      targetFilesContext += `\n### ${path}\n\`\`\`\n${content.slice(0, 2000)}\n\`\`\`\n`;
     }
   }
-
-  const treePreview = fileTree.slice(0, 100).join("\n");
-  const prompt = `You are an expert Next.js + TypeScript developer with full visibility into the project.
+  const treePreview = fileTree.slice(0, 80).join("\n");
+  return `You are an expert Next.js + TypeScript developer with full visibility into the project.
 
 ## Project File Tree:
 \`\`\`
 ${treePreview}
-${fileTree.length > 100 ? `... and ${fileTree.length - 100} more files` : ""}
+${fileTree.length > 80 ? `... and ${fileTree.length - 80} more files` : ""}
 \`\`\`
 ${targetFilesContext}
 
 ## Task:
 - Title: ${task.title}
 - Description: ${task.description || "No additional description."}
-- Target Files (user specified): ${task.targetFiles.length > 0 ? task.targetFiles.join(", ") : "Infer from task"}
+- Target Files: ${task.targetFiles.length > 0 ? task.targetFiles.join(", ") : "Infer from task"}
 - Priority: ${task.priority}
 
-## Instructions:
-1. Study the project structure carefully and match existing conventions.
-2. Implement exactly what the task describes.
-3. If target files specified, modify/create those exact files.
-4. Return ONLY a raw JSON object with NO markdown, NO backticks, NO text before or after.
+Return ONLY a raw JSON object, NO markdown, NO backticks, NO text before or after:
+{"branchName":"feature/name","commitMessage":"feat: desc","prTitle":"PR title","prBody":"## Summary\nDetails","files":[{"path":"path/file.tsx","content":"complete file content"}]}
 
-## JSON format:
-{"branchName":"feature/name","commitMessage":"feat: description","prTitle":"PR title","prBody":"## Summary\\nDetails\\n\\n## Changes\\n- item","files":[{"path":"exact/path.tsx","content":"complete file content"}]}
+Rules: branchName starts with feature/ or fix/ or chore/, 1-3 files max, complete TypeScript/Next.js code.`;
+}
 
-Rules: branchName starts with feature/ or fix/ or chore/, 1-3 files max, complete production-ready code.`;
+// استخرج JSON من الـ response
+function parseJSON(rawText) {
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error(`No JSON found in response`);
+  return JSON.parse(jsonMatch[0]);
+}
 
-  const response = await fetchWithRetry(
+// Model 1: Gemini 2.5 Flash
+async function callGemini25Flash(prompt) {
+  const res = await fetchWithRetry(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`429_OR_ERROR:${res.status}`);
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
+
+// Model 2: Gemini 2.0 Flash
+async function callGemini20Flash(prompt) {
+  const res = await fetchWithRetry(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
     {
       method: "POST",
@@ -258,22 +275,69 @@ Rules: branchName starts with feature/ or fix/ or chore/, 1-3 files max, complet
       }),
     },
   );
-  if (!response.ok)
-    throw new Error(
-      `Gemini API Error: ${response.status} ${await response.text()}`,
-    );
+  if (!res.ok) throw new Error(`429_OR_ERROR:${res.status}`);
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
 
-  const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+// Model 3: Groq (Llama 3.3 70B) - 14,400 req/day مجاناً
+async function callGroq(prompt) {
+  const GROQ_API_KEY = process.env.GROQ_API_KEY;
+  if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not set - skipping Groq");
 
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch)
-    throw new Error(`Gemini returned no JSON:\n${rawText.slice(0, 300)}`);
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    throw new Error(`Gemini JSON invalid/truncated:\n${rawText.slice(0, 300)}`);
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+      max_tokens: 8192,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Groq Error ${res.status}: ${err}`);
   }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
+// الـ Main function مع الـ Fallback Chain
+async function generateCodeWithGemini(task, fileTree, targetFileContents) {
+  const prompt = buildPrompt(task, fileTree, targetFileContents);
+  const models = [
+    { name: "Gemini 2.5 Flash", fn: callGemini25Flash },
+    { name: "Gemini 2.0 Flash", fn: callGemini20Flash },
+    { name: "Groq Llama 3.3 70B", fn: callGroq },
+  ];
+
+  for (const model of models) {
+    console.log(`🤖 Trying ${model.name}...`);
+    try {
+      const rawText = await model.fn(prompt);
+      const result = parseJSON(rawText);
+      console.log(`   ✅ Success with ${model.name}`);
+      return result;
+    } catch (err) {
+      const isRateLimit =
+        err.message.includes("429") ||
+        err.message.includes("RESOURCE_EXHAUSTED") ||
+        err.message.includes("quota");
+      if (isRateLimit) {
+        console.log(`   ⚠️ ${model.name} rate limited → trying next model...`);
+        continue;
+      }
+      // لو مش rate limit، ارمي الـ error
+      throw err;
+    }
+  }
+  throw new Error(
+    "All AI models exhausted (rate limited). Try again tomorrow or add more API keys.",
+  );
 }
 
 // ============================================================
