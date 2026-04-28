@@ -1,6 +1,6 @@
 {
   "name": "automation-abona-faltaus",
-  "version": "1.0.1",
+  "version": "1.5.1",
   "description": "Automation: Notion Tasks → Gemini AI → GitHub PR",
   "main": "notion-to-pr.js",
   "scripts": {

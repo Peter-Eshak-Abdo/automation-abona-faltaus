@@ -6,8 +6,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_OWNER = process.env.REPO_OWNER;
 const REPO_NAME = process.env.REPO_NAME;
-const NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; // service_role key عشان يقدر يقرأ
+const NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
@@ -33,9 +33,9 @@ async function fetchWithRetry(url, options, maxRetries = 2) {
 // 🗄️  جلب Supabase Schema (الجداول والأعمدة)
 // ============================================================
 async function getSupabaseSchema() {
-  if (!NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
+  if (!NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
     console.log(
-      "   ⚠️ NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
+      "   ⚠️ NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
     );
     return null;
   }
@@ -302,15 +302,21 @@ Title: ${task.title}
 Description: ${task.description || "No description"}
 Target Files: ${task.targetFiles.length > 0 ? task.targetFiles.join(", ") : "Decide based on task"}
 
-## CRITICAL RULES:
-1. Return ONLY a single-line JSON object - NO line breaks in JSON keys, NO markdown
-2. For file contents, use \\n for newlines (escaped)
-3. If task needs Supabase RLS policies or manual DB setup, add a "setupNotes" key
-4. Max 2 files
-5. Match existing code style
+## TASK TYPE GUIDE:
+- UI/Feature task → create files in app/ or components/
+- Script/Scraping task → create file in scripts/ folder (Node.js .js or Python .py)
+- Config/Setup task → create or modify config files
+- ANY task type → ALWAYS produce at least 1 file
 
-## Required JSON (single line):
-{"branchName":"feature/x","commitMessage":"feat: x","prTitle":"x","prBody":"x","setupNotes":"Any manual steps needed (RLS policies, env vars, Supabase settings) or empty string","files":[{"path":"x","content":"x"}]}`;
+## ⚠️ ABSOLUTE RULES - your response MUST follow these or it will be rejected:
+1. ENTIRE response = ONE JSON object, nothing before {, nothing after }
+2. NO markdown fences, NO explanation text, NO comments outside JSON
+3. Escape newlines in content as \\n, escape quotes as \\"
+4. Max 2 files, content under 3000 chars each
+5. setupNotes: manual steps needed (RLS policies, env vars, Supabase config) or ""
+
+## COPY THIS FORMAT exactly:
+{"branchName":"feature/short-name","commitMessage":"feat: short desc","prTitle":"Short title","prBody":"## Summary\\nWhat was done.","setupNotes":"","files":[{"path":"scripts/example.js","content":"// content\\nconsole.log(\\"hello\\")"}]}`;
 }
 
 // ============================================================
@@ -457,15 +463,26 @@ async function generateCode(
     } catch (err) {
       const isLimit =
         err.message.startsWith("RATE_LIMIT") || err.message.includes("quota");
+      const isBadJSON =
+        err.message.includes("No files") ||
+        err.message.includes("JSON") ||
+        err.message.includes("No JSON");
       if (isLimit) {
         console.log(`   ⚠️ Rate limited → next model...`);
+        continue;
+      }
+      if (isBadJSON) {
+        // الموديل رجع رد غلط (شرح بدل JSON) → جرب الموديل التاني
+        console.log(
+          `   ⚠️ Bad response (${err.message.slice(0, 60)}) → next model...`,
+        );
         continue;
       }
       if (err.message === "NO_GROQ_KEY") {
         console.log(`   ⚠️ No Groq key configured`);
         break;
       }
-      throw err; // غير rate limit - error حقيقي
+      throw err; // error حقيقي (مش rate limit ومش JSON مشكلة)
     }
   }
   throw new Error("All models rate limited. Try again later.");
