@@ -6,7 +6,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_OWNER = process.env.REPO_OWNER;
 const REPO_NAME = process.env.REPO_NAME;
-const NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL;
+const NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; // service_role key عشان يقدر يقرأ
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
@@ -33,9 +33,9 @@ async function fetchWithRetry(url, options, maxRetries = 2) {
 // 🗄️  جلب Supabase Schema (الجداول والأعمدة)
 // ============================================================
 async function getSupabaseSchema() {
-  if (!NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
+  if (!NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
     console.log(
-      "   ⚠️ NEXT_PUBLIC_NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
+      "   ⚠️ NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
     );
     return null;
   }
@@ -435,8 +435,8 @@ async function generateCode(
 
   const modelChain = [
     {
-      name: "Gemini 2.5 Flash",
-      fn: () => callGemini("gemini-2.5-flash", prompt),
+      name: "Gemini 3.1 Flash Lite",
+      fn: () => callGemini("gemini-3.1-flash-lite", prompt),
     },
     {
       name: "Gemini 2.0 Flash",
