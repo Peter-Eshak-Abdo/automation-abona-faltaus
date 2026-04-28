@@ -34,7 +34,9 @@ async function fetchWithRetry(url, options, maxRetries = 2) {
 // ============================================================
 async function getSupabaseSchema() {
   if (!NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
+  if (!NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_KEY) {
     console.log(
+      "   ⚠️ NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
       "   ⚠️ NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set - skipping schema",
     );
     return null;
