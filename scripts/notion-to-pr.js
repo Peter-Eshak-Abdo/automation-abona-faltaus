@@ -435,8 +435,8 @@ async function generateCode(
 
   const modelChain = [
     {
-      name: "Gemini 3.1 Flash Live Preview",
-      fn: () => callGemini("gemini-3.1-flash-live-previwe", prompt),
+      name: "Gemini 2.5 Flash",
+      fn: () => callGemini("gemini-2.5-flash", prompt),
     },
     {
       name: "Gemini 2.0 Flash",
