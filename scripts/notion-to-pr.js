@@ -1,3 +1,8 @@
+// ============================================================
+// notion-to-pr.js  v2.0
+// Notion → Gemini (مع file tree + dependency awareness) → GitHub PR
+// ============================================================
+
 const { Octokit } = require("@octokit/rest");
 
 const NOTION_TOKEN    = process.env.NOTION_TOKEN;
