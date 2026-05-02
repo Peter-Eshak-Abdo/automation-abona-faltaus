@@ -1,18 +1,24 @@
 // ============================================================
-// notion-to-pr.js  v2.0
-// Notion → Gemini (مع file tree + dependency awareness) → GitHub PR
+// notion-to-pr.js  v4.0
+// جديد:
+// 1. Google CodeWiki لفهم المشروع بعمق
+// 2. Status: New → In Progress → Done
+// 3. AI يقرأ الملفات الموجودة ويعدّل عليها (مش يمسح)
+// 4. Wildcard file patterns (app/exam/quiz/*)
+// 5. 503 fallback لـ Groq
 // ============================================================
 
 const { Octokit } = require("@octokit/rest");
 
-const NOTION_TOKEN    = process.env.NOTION_TOKEN;
-const NOTION_DB_ID    = process.env.NOTION_DATABASE_ID;
-const GEMINI_API_KEY  = process.env.GEMINI_API_KEY;
-const GITHUB_TOKEN    = process.env.GITHUB_TOKEN;
-const REPO_OWNER      = process.env.REPO_OWNER;
-const REPO_NAME       = process.env.REPO_NAME;
-const SUPABASE_URL    = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const NOTION_TOKEN = process.env.NOTION_TOKEN;
+const NOTION_DB_ID = process.env.NOTION_DATABASE_ID;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const REPO_OWNER = process.env.REPO_OWNER;
+const REPO_NAME = process.env.REPO_NAME;
+const SUPABASE_URL =
+  process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -25,7 +31,7 @@ async function fetchWithRetry(url, options, maxRetries = 2) {
     const res = await fetch(url, options);
     if (res.status !== 429) return res;
     const wait = i * 20000;
-    console.log(`   ⚠️ 429 → waiting ${wait/1000}s...`);
+    console.log(`   ⚠️ 429 → waiting ${wait / 1000}s...`);
     await sleep(wait);
   }
   return fetch(url, options);
@@ -42,7 +48,10 @@ async function getCodeWikiContext() {
     const wikiUrl = `https://codewiki.google/api/v1/repos/${repoPath}/summary`;
 
     const res = await fetch(wikiUrl, {
-      headers: { "Accept": "application/json", "User-Agent": "notion-pr-automation/4.0" }
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "notion-pr-automation/4.0",
+      },
     });
 
     if (res.ok) {
@@ -56,15 +65,16 @@ ${architecture ? `\n### Architecture:\n${architecture}` : ""}`.slice(0, 3000);
     }
 
     // لو CodeWiki مش متاح، نجيب الـ README من GitHub
-    console.log("ℹ️ CodeWiki not available, fetching README...");
+    console.log("   ℹ️ CodeWiki not available, fetching README...");
     const { data: readme } = await octokit.repos.getReadme({
-      owner: REPO_OWNER, repo: REPO_NAME
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
     });
     const content = Buffer.from(readme.content, "base64").toString("utf-8");
-    console.log(`✅ README fetched (${content.length} chars)`);
+    console.log(`   ✅ README fetched (${content.length} chars)`);
     return `## Project README:\n${content.slice(0, 2000)}`;
   } catch (err) {
-    console.warn(`⚠️ CodeWiki/README failed: ${err.message}`);
+    console.warn(`   ⚠️ CodeWiki/README failed: ${err.message}`);
     return "";
   }
 }
@@ -75,15 +85,30 @@ ${architecture ? `\n### Architecture:\n${architecture}` : ""}`.slice(0, 3000);
 async function getRepoFileTree() {
   console.log("🗂️  Fetching file tree...");
   try {
-    const { data: ref } = await octokit.git.getRef({ owner: REPO_OWNER, repo: REPO_NAME, ref: "heads/main" });
-    const { data: commit } = await octokit.git.getCommit({ owner: REPO_OWNER, repo: REPO_NAME, commit_sha: ref.object.sha });
-    const { data: tree } = await octokit.git.getTree({ owner: REPO_OWNER, repo: REPO_NAME, tree_sha: commit.tree.sha, recursive: "true" });
+    const { data: ref } = await octokit.git.getRef({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      ref: "heads/main",
+    });
+    const { data: commit } = await octokit.git.getCommit({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      commit_sha: ref.object.sha,
+    });
+    const { data: tree } = await octokit.git.getTree({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      tree_sha: commit.tree.sha,
+      recursive: "true",
+    });
     const ignored = /node_modules|\.next|\.git|dist|build|\.lock|\.log/;
-    const files = tree.tree.filter(f => f.type === "blob" && !ignored.test(f.path)).map(f => f.path);
-    console.log(`✓ ${files.length} files`);
+    const files = tree.tree
+      .filter((f) => f.type === "blob" && !ignored.test(f.path))
+      .map((f) => f.path);
+    console.log(`   ✓ ${files.length} files`);
     return files;
   } catch (err) {
-    console.warn(`⚠️ ${err.message}`);
+    console.warn(`   ⚠️ ${err.message}`);
     return [];
   }
 }
@@ -94,10 +119,12 @@ function expandWildcards(targetFiles, allFiles) {
   for (const pattern of targetFiles) {
     if (pattern.endsWith("/*") || pattern.endsWith("/**")) {
       const prefix = pattern.replace(/\/\*+$/, "/");
-      const matches = allFiles.filter(f => f.startsWith(prefix));
+      const matches = allFiles.filter((f) => f.startsWith(prefix));
       if (matches.length > 0) {
         expanded.push(...matches);
-        console.log(`   🔍 "${pattern}" → ${matches.length} files: ${matches.slice(0,3).join(", ")}${matches.length > 3 ? "..." : ""}`);
+        console.log(
+          `   🔍 "${pattern}" → ${matches.length} files: ${matches.slice(0, 3).join(", ")}${matches.length > 3 ? "..." : ""}`,
+        );
       } else {
         console.log(`   ⚠️ No files matched: "${pattern}"`);
       }
@@ -110,9 +137,14 @@ function expandWildcards(targetFiles, allFiles) {
 
 async function getFileContent(filePath) {
   try {
-    const { data } = await octokit.repos.getContent({ owner: REPO_OWNER, repo: REPO_NAME, path: filePath });
-    if (data.content) return Buffer.from(data.content, "base64").toString("utf-8");
-  } catch { }
+    const { data } = await octokit.repos.getContent({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      path: filePath,
+    });
+    if (data.content)
+      return Buffer.from(data.content, "base64").toString("utf-8");
+  } catch {}
   return null;
 }
 
@@ -121,33 +153,50 @@ async function getFileContent(filePath) {
 // ============================================================
 async function fetchOneTask() {
   console.log("📋 Fetching next task...");
-  const res = await fetch(`https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${NOTION_TOKEN}`, "Notion-Version": "2022-06-28", "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filter: { property: "Status", select: { equals: "🆕 New" } },
-      sorts: [{ property: "Priority", direction: "descending" }],
-      page_size: 1,
-    }),
-  });
+  const res = await fetch(
+    `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        filter: { property: "Status", select: { equals: "🆕 New" } },
+        sorts: [{ property: "Priority", direction: "descending" }],
+        page_size: 1,
+      }),
+    },
+  );
   if (!res.ok) throw new Error(`Notion: ${res.status} ${await res.text()}`);
   const data = await res.json();
   if (!data.results.length) return null;
 
   const page = data.results[0];
   const notes = page.properties["Notes"]?.rich_text?.[0]?.plain_text || "";
-  const filesMatch  = notes.match(/Files: (.+)/);
-  const depsMatch   = notes.match(/Depends on: (.+)/);
-  const descLines   = notes.split("\n").filter(l =>
-    !l.startsWith("Received:") && !l.startsWith("Files:") && !l.startsWith("Depends on:")
-  );
+  const filesMatch = notes.match(/Files: (.+)/);
+  const depsMatch = notes.match(/Depends on: (.+)/);
+  const descLines = notes
+    .split("\n")
+    .filter(
+      (l) =>
+        !l.startsWith("Received:") &&
+        !l.startsWith("Files:") &&
+        !l.startsWith("Depends on:"),
+    );
   return {
-    id:          page.id,
-    title:       page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled",
+    id: page.id,
+    title: page.properties["Task Name"]?.title?.[0]?.plain_text || "Untitled",
     description: descLines.join("\n").trim(),
-    targetFiles: filesMatch ? filesMatch[1].split(",").map(f => f.trim()).filter(Boolean) : [],
-    dependsOn:   depsMatch ? depsMatch[1].trim() : null,
-    priority:    page.properties["Priority"]?.select?.name || "🟡 Medium",
+    targetFiles: filesMatch
+      ? filesMatch[1]
+          .split(",")
+          .map((f) => f.trim())
+          .filter(Boolean)
+      : [],
+    dependsOn: depsMatch ? depsMatch[1].trim() : null,
+    priority: page.properties["Priority"]?.select?.name || "🟡 Medium",
   };
 }
 
@@ -157,8 +206,14 @@ async function fetchOneTask() {
 async function setNotionStatus(pageId, status) {
   await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
     method: "PATCH",
-    headers: { Authorization: `Bearer ${NOTION_TOKEN}`, "Notion-Version": "2022-06-28", "Content-Type": "application/json" },
-    body: JSON.stringify({ properties: { Status: { select: { name: status } } } }),
+    headers: {
+      Authorization: `Bearer ${NOTION_TOKEN}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      properties: { Status: { select: { name: status } } },
+    }),
   });
   console.log(`   ✅ Notion → ${status}`);
 }
@@ -168,20 +223,31 @@ async function setNotionStatus(pageId, status) {
 // ============================================================
 async function checkDependencyReady(dependsOnTitle) {
   if (!dependsOnTitle) return { ready: true };
-  const res = await fetch(`https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${NOTION_TOKEN}`, "Notion-Version": "2022-06-28", "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filter: {
-        and: [
-          { property: "Task Name", title: { contains: dependsOnTitle.slice(0, 50) } },
-          { property: "Status", select: { equals: "🆕 New" } },
-        ],
+  const res = await fetch(
+    `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({
+        filter: {
+          and: [
+            {
+              property: "Task Name",
+              title: { contains: dependsOnTitle.slice(0, 50) },
+            },
+            { property: "Status", select: { equals: "🆕 New" } },
+          ],
+        },
+      }),
+    },
+  );
   const data = await res.json();
-  if (data.results?.length > 0) return { ready: false, reason: `"${dependsOnTitle}" لسه New` };
+  if (data.results?.length > 0)
+    return { ready: false, reason: `"${dependsOnTitle}" لسه New` };
   return { ready: true };
 }
 
@@ -195,11 +261,15 @@ function buildPrompt(task, fileTree, existingFiles, projectContext) {
   let filesContext = "";
   const fileEntries = Object.entries(existingFiles);
   if (fileEntries.length > 0) {
-    filesContext = "\n## ⚠️ EXISTING FILES TO MODIFY (preserve all existing code, only ADD what's needed):\n";
+    filesContext =
+      "\n## ⚠️ EXISTING FILES TO MODIFY (preserve all existing code, only ADD what's needed):\n";
     for (const [path, content] of fileEntries) {
       // بناخد أول 1200 حرف بس عشان نوفر tokens
       const preview = content.slice(0, 1200);
-      const truncated = content.length > 1200 ? `\n// ... (${content.length - 1200} more chars)` : "";
+      const truncated =
+        content.length > 1200
+          ? `\n// ... (${content.length - 1200} more chars)`
+          : "";
       filesContext += `\n### FILE: ${path}\n\`\`\`\n${preview}${truncated}\n\`\`\`\n`;
     }
   }
@@ -260,7 +330,9 @@ function smartParseJSON(rawText) {
     // محاولة إصلاح common issues
     try {
       // إصلاح unescaped newlines داخل strings
-      const fixed = jsonStr.replace(/(?<=":"\s*)([\s\S]*?)(?="\s*[,}])/g, s => s.replace(/\n/g, "\\n").replace(/\r/g, ""));
+      const fixed = jsonStr.replace(/(?<=":"\s*)([\s\S]*?)(?="\s*[,}])/g, (s) =>
+        s.replace(/\n/g, "\\n").replace(/\r/g, ""),
+      );
       return JSON.parse(fixed);
     } catch {
       throw new Error(`JSON parse failed: ${e1.message.slice(0, 100)}`);
@@ -281,13 +353,21 @@ async function callGemini(model, prompt) {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
       }),
-    }
+    },
   );
   if (!res.ok) {
     const body = await res.text();
-    const shouldFallback = res.status === 429 || res.status === 503 ||
-      body.includes("quota") || body.includes("UNAVAILABLE") || body.includes("RESOURCE_EXHAUSTED");
-    throw new Error(shouldFallback ? `FALLBACK:${res.status}` : `Gemini ${res.status}: ${body.slice(0,150)}`);
+    const shouldFallback =
+      res.status === 429 ||
+      res.status === 503 ||
+      body.includes("quota") ||
+      body.includes("UNAVAILABLE") ||
+      body.includes("RESOURCE_EXHAUSTED");
+    throw new Error(
+      shouldFallback
+        ? `FALLBACK:${res.status}`
+        : `Gemini ${res.status}: ${body.slice(0, 150)}`,
+    );
   }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -298,18 +378,26 @@ async function callGroq(prompt) {
   if (!key) throw new Error("NO_GROQ_KEY");
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile",
       messages: [
-        { role: "system", content: "You are a code generator. Output ONLY raw JSON, no markdown, no explanation, no text before or after the JSON object." },
+        {
+          role: "system",
+          content:
+            "You are a code generator. Output ONLY raw JSON, no markdown, no explanation, no text before or after the JSON object.",
+        },
         { role: "user", content: prompt },
       ],
       temperature: 0.1,
       max_tokens: 8192,
     }),
   });
-  if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0,150)}`);
+  if (!res.ok)
+    throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 150)}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content || "";
 }
@@ -318,9 +406,15 @@ async function generateCode(task, fileTree, existingFiles, projectContext) {
   const prompt = buildPrompt(task, fileTree, existingFiles, projectContext);
 
   const models = [
-    { name: "Gemini 2.5 Flash", fn: () => callGemini("gemini-2.5-flash", prompt) },
-    { name: "Gemini 2.0 Flash", fn: () => callGemini("gemini-2.0-flash", prompt) },
-    { name: "Groq Llama 3.3",   fn: () => callGroq(prompt) },
+    {
+      name: "Gemini 2.5 Flash",
+      fn: () => callGemini("gemini-2.5-flash", prompt),
+    },
+    {
+      name: "Gemini 2.0 Flash",
+      fn: () => callGemini("gemini-2.0-flash", prompt),
+    },
+    { name: "Groq Llama 3.3", fn: () => callGroq(prompt) },
   ];
 
   for (const model of models) {
@@ -332,11 +426,22 @@ async function generateCode(task, fileTree, existingFiles, projectContext) {
       console.log(`   ✅ ${model.name} → ${result.files.length} file(s)`);
       return result;
     } catch (err) {
-      const fallback = err.message.startsWith("FALLBACK") || err.message.includes("No JSON") ||
-                       err.message.includes("JSON parse") || err.message.includes("No files") ||
-                       err.message.includes("quota");
-      if (fallback) { console.log(`   ⚠️ ${model.name}: ${err.message.slice(0,80)} → trying next...`); continue; }
-      if (err.message === "NO_GROQ_KEY") { console.log("   ⚠️ No Groq key"); break; }
+      const fallback =
+        err.message.startsWith("FALLBACK") ||
+        err.message.includes("No JSON") ||
+        err.message.includes("JSON parse") ||
+        err.message.includes("No files") ||
+        err.message.includes("quota");
+      if (fallback) {
+        console.log(
+          `   ⚠️ ${model.name}: ${err.message.slice(0, 80)} → trying next...`,
+        );
+        continue;
+      }
+      if (err.message === "NO_GROQ_KEY") {
+        console.log("   ⚠️ No Groq key");
+        break;
+      }
       throw err;
     }
   }
@@ -347,18 +452,32 @@ async function generateCode(task, fileTree, existingFiles, projectContext) {
 // 4️⃣  GitHub Operations
 // ============================================================
 async function getMainSHA() {
-  const { data } = await octokit.repos.getBranch({ owner: REPO_OWNER, repo: REPO_NAME, branch: "main" });
+  const { data } = await octokit.repos.getBranch({
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    branch: "main",
+  });
   return data.commit.sha;
 }
 
 async function createBranch(name, sha) {
   console.log(`🌿 Branch: ${name}`);
   try {
-    await octokit.git.createRef({ owner: REPO_OWNER, repo: REPO_NAME, ref: `refs/heads/${name}`, sha });
+    await octokit.git.createRef({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      ref: `refs/heads/${name}`,
+      sha,
+    });
   } catch (err) {
     if (err.status === 422) {
       const unique = `${name}-${Date.now()}`;
-      await octokit.git.createRef({ owner: REPO_OWNER, repo: REPO_NAME, ref: `refs/heads/${unique}`, sha });
+      await octokit.git.createRef({
+        owner: REPO_OWNER,
+        repo: REPO_NAME,
+        ref: `refs/heads/${unique}`,
+        sha,
+      });
       return unique;
     }
     throw err;
@@ -371,13 +490,24 @@ async function commitFiles(branch, files, msg) {
   for (const f of files) {
     let existingSha;
     try {
-      const { data } = await octokit.repos.getContent({ owner: REPO_OWNER, repo: REPO_NAME, path: f.path, ref: branch });
+      const { data } = await octokit.repos.getContent({
+        owner: REPO_OWNER,
+        repo: REPO_NAME,
+        path: f.path,
+        ref: branch,
+      });
       existingSha = data.sha;
-    } catch { existingSha = undefined; }
+    } catch {
+      existingSha = undefined;
+    }
     await octokit.repos.createOrUpdateFileContents({
-      owner: REPO_OWNER, repo: REPO_NAME, path: f.path, message: msg,
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      path: f.path,
+      message: msg,
       content: Buffer.from(f.content, "utf-8").toString("base64"),
-      branch, sha: existingSha,
+      branch,
+      sha: existingSha,
     });
     console.log(`   ✓ ${f.path}`);
   }
@@ -400,8 +530,12 @@ ${task.dependsOn ? `- **Depends on**: ${task.dependsOn}` : ""}
 > 🤖 Auto-generated by Notion → AI → GitHub Actions`;
 
   const { data: pr } = await octokit.pulls.create({
-    owner: REPO_OWNER, repo: REPO_NAME,
-    title: generated.prTitle, body, head: branch, base: "main",
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    title: generated.prTitle,
+    body,
+    head: branch,
+    base: "main",
   });
   console.log(`   ✅ PR: ${pr.html_url}`);
   return pr.html_url;
@@ -415,13 +549,25 @@ async function main() {
   console.log("🔄 Notion → PR Automation v4.0");
   console.log("=".repeat(50));
 
-  const required = { NOTION_TOKEN, NOTION_DB_ID, GEMINI_API_KEY, GITHUB_TOKEN, REPO_OWNER, REPO_NAME };
-  const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
+  const required = {
+    NOTION_TOKEN,
+    NOTION_DB_ID,
+    GEMINI_API_KEY,
+    GITHUB_TOKEN,
+    REPO_OWNER,
+    REPO_NAME,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
   if (missing.length) throw new Error(`Missing: ${missing.join(", ")}`);
 
   // 1. جيب التاسك
   const task = await fetchOneTask();
-  if (!task) { console.log("✨ No New tasks. Done!"); return; }
+  if (!task) {
+    console.log("✨ No New tasks. Done!");
+    return;
+  }
 
   console.log(`\n📝 Task: "${task.title}"`);
   console.log(`   Priority: ${task.priority}`);
@@ -455,17 +601,27 @@ async function main() {
       console.log(`📁 Reading ${expandedFiles.length} file(s)...`);
       // خلينا ناخد أول 5 ملفات بس عشان منكثفش الـ prompt
       const filesToRead = expandedFiles.slice(0, 5);
-      if (expandedFiles.length > 5) console.log(`   ⚠️ Too many files - reading first 5 only`);
+      if (expandedFiles.length > 5)
+        console.log(`   ⚠️ Too many files - reading first 5 only`);
 
       for (const fp of filesToRead) {
         const content = await getFileContent(fp);
-        if (content) { existingFiles[fp] = content; console.log(`   ✓ ${fp} (${content.length} chars)`); }
-        else { console.log(`   ○ ${fp} (new)`); }
+        if (content) {
+          existingFiles[fp] = content;
+          console.log(`   ✓ ${fp} (${content.length} chars)`);
+        } else {
+          console.log(`   ○ ${fp} (new)`);
+        }
       }
     }
 
     // 6. Generate كود
-    const generated = await generateCode(task, fileTree, existingFiles, projectContext);
+    const generated = await generateCode(
+      task,
+      fileTree,
+      existingFiles,
+      projectContext,
+    );
 
     // 7. GitHub: Branch → Commit → PR
     const sha = await getMainSHA();
@@ -478,9 +634,9 @@ async function main() {
 
     console.log(`\n${"=".repeat(50)}`);
     console.log(`🎉 Success! PR: ${prUrl}`);
-    if (generated.setupNotes?.trim()) console.log(`⚠️  Check PR for manual setup steps!`);
+    if (generated.setupNotes?.trim())
+      console.log(`⚠️  Check PR for manual setup steps!`);
     console.log("=".repeat(50));
-
   } catch (err) {
     // لو فيه error → رجّع لـ New عشان يتعالج تاني
     console.error(`\n❌ Failed: ${err.message}`);
@@ -490,7 +646,7 @@ async function main() {
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("💥 Fatal:", err.message);
   process.exit(1);
 });
