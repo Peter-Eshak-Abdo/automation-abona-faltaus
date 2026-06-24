@@ -1,13 +1,3 @@
-// ============================================================
-// notion-to-pr.js  v4.0
-// جديد:
-// 1. Google CodeWiki لفهم المشروع بعمق
-// 2. Status: New → In Progress → Done
-// 3. AI يقرأ الملفات الموجودة ويعدّل عليها (مش يمسح)
-// 4. Wildcard file patterns (app/exam/quiz/*)
-// 5. 503 fallback لـ Groq
-// ============================================================
-
 const { Octokit } = require("@octokit/rest");
 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
@@ -16,8 +6,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_OWNER = process.env.REPO_OWNER;
 const REPO_NAME = process.env.REPO_NAME;
-const SUPABASE_URL =
-  process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
