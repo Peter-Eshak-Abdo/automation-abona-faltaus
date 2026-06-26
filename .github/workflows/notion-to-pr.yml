@@ -3,7 +3,7 @@ name: 🤖 Notion → AI → Pull Request
 on:
   # ── تلقائي: كل يوم الساعة 9 الصبح (بتوقيت UTC = 11 بتوقيت القاهرة)
   schedule:
-    - cron: "0 7 * * *"
+    # - cron: "0 7 * * *"
 
   # ── يدوي: تقدر تشغله من GitHub Actions tab في أي وقت
   workflow_dispatch:
